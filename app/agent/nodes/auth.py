@@ -11,6 +11,7 @@ from app.agent.state import AgentState
 
 def _extract_auth(state: AgentState, config: RunnableConfig) -> dict[str, str]:
     """Extract auth context and LangGraph metadata from config."""
+    # これはどこから取得している？よばれるときに設定されている？
     configurable = config.get("configurable", {})
     auth = configurable.get("langgraph_auth_user", {})
 

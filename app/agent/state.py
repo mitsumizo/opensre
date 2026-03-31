@@ -7,6 +7,7 @@ from typing import Annotated, Any, Literal, TypedDict, cast
 
 from langgraph.graph import add_messages
 
+# どこから情報を集めるか
 EvidenceSource = Literal[
     "storage",
     "batch",
@@ -20,12 +21,19 @@ EvidenceSource = Literal[
     "github",
     "sentry",
 ]
+
+# チャット or 調査
 AgentMode = Literal["chat", "investigation"]
 
 
 class ChatMessage(TypedDict, total=False):
+    """チャットを表す"""
+
+    # 役割
     role: Literal["system", "user", "assistant"]
+    # 中身
     content: str
+    # ツール
     tool_calls: list[dict[str, Any]]
 
 
@@ -38,13 +46,19 @@ class AgentState(TypedDict, total=False):
 
     # Mode selection
     mode: AgentMode
-    route: str  # "tracer_data" or "general" for chat routing
+    # "tracer_data" or "general" for chat routing
+    route: str
 
     # Auth context (from JWT)
+    # 組織ID
     org_id: str
+    # ユーザーID
     user_id: str
+    # メールアドレス
     user_email: str
+    # ユーザー名
     user_name: str
+    # 企業の略称
     organization_slug: str
 
     # Chat mode - conversation (add_messages reducer appends instead of replacing)
@@ -54,59 +68,92 @@ class AgentState(TypedDict, total=False):
     is_noise: bool  # True if message classified as noise, skip investigation
 
     # Investigation mode - alert input
+    # アラート名
     alert_name: str
+    # パイプライン名
     pipeline_name: str
+    # 重大さ
     severity: str
+    # アラートのソース
     alert_source: str  # "grafana", "datadog", "cloudwatch", or "" if unknown
+    # アラートの内容（生データ）
     raw_alert: str | dict[str, Any]
+    # アラートの内容（構造化済み）
     alert_json: dict[str, Any]
 
     # Investigation planning
+    # 行うアクションのリスト（TODO : アクションは何がある）
     planned_actions: list[str]
+    # アクションを行う理由
     plan_rationale: str
+    # 参照可能なリソース
     available_sources: dict[str, dict]
+    # 参照可能なアクション（これって、アクションの全量？それとも・・・？なぜ変数化？）
     available_action_names: list[str]
 
     # Resolved integrations (from resolve_integrations node)
+    # 解決した統合？(TODO : 確認する。)
     resolved_integrations: dict[str, Any]
 
     # Shared context/evidence
+    # コンテキスト
     context: dict[str, Any]
+    # エビデンス
     evidence: dict[str, Any]
 
     # Investigation analysis
+    # 根本原因
     root_cause: str
+    # 原因のカテゴリー
     root_cause_category: str
+    # 妥当性のある主張
     validated_claims: list[dict[str, Any]]  # List of validated claims with evidence
+    # 妥当性のない主張
     non_validated_claims: list[dict[str, Any]]  # List of non-validated claims
+    # 妥当性スコア
     validity_score: float  # Percentage of validated vs total claims
+    # さらなる調査が必要な観点
     investigation_recommendations: list[str]  # Recommended investigations for additional evidence
+    # 改善に向けたステップ
     remediation_steps: list[str]  # Recommended remediation / prevention steps
+    # 調査した回数
     investigation_loop_count: int  # Number of times we've looped back to investigate
+    # 診断の仮説
     hypotheses: list[str]  # Hypotheses to consider during diagnosis
+    # 実行した仮説のリスト
     executed_hypotheses: list[
         dict[str, Any]
     ]  # History of executed hypotheses/API calls to avoid duplicates
+    # 調査を始めた時間
     investigation_started_at: float  # Monotonic start time for timing calculations
 
     # Slack context (when triggered from Slack message)
+    # Slack情報
     slack_context: dict[str, Any]  # channel_id, ts, thread_ts, team_id, etc.
 
     # LangGraph context (injected from config by inject_auth_node)
+    # スレッドID（TODO : inject_auth_mode とは？）
     thread_id: str
+    # 実行ID
     run_id: str
+    # JWT
     _auth_token: str  # Raw JWT for authenticated API calls
 
     # Outputs
+    # Slackへのメッセージ
     slack_message: str
+    # 問題の内容(markdown)
     problem_md: str
+    # 要約
     summary: str
+    # 問題へのレポート
     problem_report: dict[str, Any]
 
 
-# Alias for backward compatibility
+# Alias for backward compatibility（TODO : これの必要性がわからない）
 InvestigationState = AgentState
 
+#  (TODO :これの必要性がわからない。)
 STATE_DEFAULTS: dict[str, Any] = {
     "mode": "chat",
     "route": "",
