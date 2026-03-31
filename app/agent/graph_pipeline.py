@@ -29,6 +29,7 @@ from app.agent.routing import (
 )
 from app.agent.runners import SimpleAgent
 from app.agent.state import AgentState
+from app.agent.constants import NodeName, RouteName
 
 
 def build_graph(config: None = None) -> CompiledStateGraph:
@@ -36,35 +37,59 @@ def build_graph(config: None = None) -> CompiledStateGraph:
     _ = config
     graph = StateGraph(AgentState)
 
-    graph.add_node("inject_auth", inject_auth_node)
+    # ── 1. エントリーポイント（入り口） ──
+    graph.add_node(NodeName.INJECT_AUTH, inject_auth_node)
+    graph.set_entry_point(NodeName.INJECT_AUTH)
+    graph.add_conditional_edges(
+        NodeName.INJECT_AUTH, 
+        route_by_mode, 
+        {RouteName.CHAT: NodeName.ROUTER, RouteName.INVESTIGATION: NodeName.EXTRACT_ALERT}
+    )
 
-    graph.add_node("router", router_node)
-    graph.add_node("chat_agent", chat_agent_node)  # type: ignore[arg-type]
-    graph.add_node("general", general_node)  # type: ignore[arg-type]
-    graph.add_node("tool_executor", tool_executor_node)
+    # ── 2. チャットボット機能のフロー（Chat Agent） ──
+    graph.add_node(NodeName.ROUTER, router_node)
+    graph.add_node(NodeName.CHAT_AGENT, chat_agent_node)  # type: ignore[arg-type]
+    graph.add_node(NodeName.GENERAL, general_node)  # type: ignore[arg-type]
+    graph.add_node(NodeName.TOOL_EXECUTOR, tool_executor_node)
 
-    graph.add_node("extract_alert", node_extract_alert)
-    graph.add_node("resolve_integrations", node_resolve_integrations)
-    graph.add_node("plan_actions", node_plan_actions)
-    graph.add_node("investigate", node_investigate)
-    graph.add_node("diagnose", node_diagnose_root_cause)
-    graph.add_node("publish", node_publish_findings)
+    graph.add_conditional_edges(
+        NodeName.ROUTER, 
+        route_chat, 
+        {RouteName.TRACER_DATA: NodeName.CHAT_AGENT, RouteName.GENERAL: NodeName.GENERAL}
+    )
+    graph.add_conditional_edges(
+        NodeName.CHAT_AGENT, 
+        should_call_tools, 
+        {RouteName.CALL_TOOLS: NodeName.TOOL_EXECUTOR, RouteName.DONE: END}
+    )
+    graph.add_edge(NodeName.TOOL_EXECUTOR, NodeName.CHAT_AGENT)
+    graph.add_edge(NodeName.GENERAL, END)
 
-    graph.set_entry_point("inject_auth")
+    # ── 3. 自動調査機能のフロー（RCA Investigation） ──
+    # ログを構造化
+    graph.add_node(NodeName.EXTRACT_ALERT, node_extract_alert)
+    # 必要なキーを取得
+    graph.add_node(NodeName.RESOLVE_INTEGRATIONS, node_resolve_integrations)
+    # 行動のプランニング
+    graph.add_node(NodeName.PLAN_ACTIONS, node_plan_actions)
+    graph.add_node(NodeName.INVESTIGATE, node_investigate)
+    graph.add_node(NodeName.DIAGNOSE, node_diagnose_root_cause)
+    graph.add_node(NodeName.PUBLISH, node_publish_findings)
 
-    graph.add_conditional_edges("inject_auth", route_by_mode, {"chat": "router", "investigation": "extract_alert"})
-
-    graph.add_conditional_edges("router", route_chat, {"tracer_data": "chat_agent", "general": "general"})
-    graph.add_conditional_edges("chat_agent", should_call_tools, {"call_tools": "tool_executor", "done": END})
-    graph.add_edge("tool_executor", "chat_agent")
-    graph.add_edge("general", END)
-
-    graph.add_conditional_edges("extract_alert", route_after_extract, {"end": END, "investigate": "resolve_integrations"})
-    graph.add_edge("resolve_integrations", "plan_actions")
-    graph.add_edge("plan_actions", "investigate")
-    graph.add_edge("investigate", "diagnose")
-    graph.add_conditional_edges("diagnose", route_investigation_loop, {"investigate": "plan_actions", "publish": "publish"})
-    graph.add_edge("publish", END)
+    graph.add_conditional_edges(
+        NodeName.EXTRACT_ALERT, 
+        route_after_extract, 
+        {RouteName.END: END, RouteName.INVESTIGATE: NodeName.RESOLVE_INTEGRATIONS}
+    )
+    graph.add_edge(NodeName.RESOLVE_INTEGRATIONS, NodeName.PLAN_ACTIONS)
+    graph.add_edge(NodeName.PLAN_ACTIONS, NodeName.INVESTIGATE)
+    graph.add_edge(NodeName.INVESTIGATE, NodeName.DIAGNOSE)
+    graph.add_conditional_edges(
+        NodeName.DIAGNOSE, 
+        route_investigation_loop, 
+        {RouteName.INVESTIGATE: NodeName.PLAN_ACTIONS, RouteName.PUBLISH: NodeName.PUBLISH}
+    )
+    graph.add_edge(NodeName.PUBLISH, END)
 
     return graph.compile()
 
