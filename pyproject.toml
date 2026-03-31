@@ -11,7 +11,7 @@ requires-python = ">=3.11"
 dependencies = [
     # Core AI/Agent
     "anthropic>=0.77.1",
-     "mcp",
+    "mcp",
     "openai>=2.0.0",
     "langsmith>=0.6.8",
     "langgraph>=0.4.0",
@@ -46,6 +46,7 @@ dependencies = [
     "opentelemetry-instrumentation-requests>=0.40b0",
     # Tracer
     "tracer_decorator",
+    "langgraph-api==0.7.90",
 ]
 
 [project.scripts]
@@ -82,3 +83,8 @@ select = ["E", "F", "I", "S"]
 "tests/shared/**" = ["S108", "S310", "S603", "S607"]
 "tests/**/infrastructure_sdk/**" = ["S108", "S603", "S607"]
 "tests/**/trigger_lambda/**" = ["S108", "S603", "S607"]
+
+[dependency-groups]
+dev = [
+    "langgraph-cli[inmem]>=0.4.19",
+]

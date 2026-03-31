@@ -1,11 +1,10 @@
 {
   "$schema": "https://langgra.ph/schema.json",
-  "dependencies": ["."],
+  "dependencies": [
+    "."
+  ],
   "graphs": {
     "agent": "./app/agent/graph_pipeline.py:build_graph"
-  },
-  "auth": {
-    "path": "./app/auth/auth.py:auth"
   },
   "env": ".env",
   "image_distro": "wolfi"
