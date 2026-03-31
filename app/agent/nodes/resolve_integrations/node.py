@@ -286,6 +286,24 @@ def _merge_integrations_by_service(
     return list(merged_by_service.values())
 
 
+def _get_active_token(state: InvestigationState) -> tuple[str, bool]:
+    """Extract active API token and return (token, is_webhook_token)."""
+    webhook_token = _strip_bearer(state.get("_auth_token", "").strip())
+    if webhook_token:
+        return webhook_token, True
+        
+    env_token = _strip_bearer(os.getenv("JWT_TOKEN", "").strip())
+    if env_token:
+        return env_token, False
+        
+    return "", False
+
+
+def _fetch_remote_integrations(org_id: str, token: str) -> list[dict[str, Any]]:
+    from app.agent.tools.clients.tracer_client import get_tracer_client_for_org
+    return get_tracer_client_for_org(org_id, token).get_all_integrations()
+
+
 @traceable(name="node_resolve_integrations")
 def node_resolve_integrations(state: InvestigationState) -> dict:
     """Fetch all org integrations and classify them by service.
@@ -296,65 +314,47 @@ def node_resolve_integrations(state: InvestigationState) -> dict:
       3. Local sources: ~/.tracer/integrations.json, plus env-based integrations for standalone use
     """
     import logging
+    log = logging.getLogger(__name__)
 
     tracker = get_tracker()
     tracker.start("resolve_integrations", "Fetching org integrations")
 
-    log = logging.getLogger(__name__)
-    org_id = state.get("org_id", "")
+    token, is_webhook = _get_active_token(state)
+    
+    # Priority 3: No tokens found, use local sources
+    if not token:
+        return _resolve_from_local_sources(tracker)
 
-    webhook_token = _strip_bearer(state.get("_auth_token", "").strip())
-    if webhook_token:
-        if not org_id:
-            org_id = _decode_org_id_from_token(webhook_token)
-        if not org_id:
+    # Determine org_id
+    org_id = state.get("org_id", "") or _decode_org_id_from_token(token)
+
+    if not org_id:
+        if is_webhook:
             log.warning("_auth_token present but could not decode org_id")
-            tracker.complete(
-                "resolve_integrations",
-                fields_updated=["resolved_integrations"],
-                message="Auth token present but org_id could not be determined",
-            )
+            tracker.complete("resolve_integrations", fields_updated=["resolved_integrations"], message="Auth token present but org_id could not be determined")
             return {"resolved_integrations": {}}
-        try:
-            from app.agent.tools.clients.tracer_client import get_tracer_client_for_org
-            all_integrations = get_tracer_client_for_org(org_id, webhook_token).get_all_integrations()
-        except Exception as exc:
+        return _resolve_from_local_sources(tracker)
+
+    # Fetch from remote API
+    try:
+        all_integrations = _fetch_remote_integrations(org_id, token)
+    except Exception as exc:
+        if is_webhook:
             log.warning("Remote integrations fetch failed: %s", exc)
-            tracker.complete(
-                "resolve_integrations",
-                fields_updated=["resolved_integrations"],
-                message="Remote integrations fetch failed",
-            )
+            tracker.complete("resolve_integrations", fields_updated=["resolved_integrations"], message="Remote integrations fetch failed")
             return {"resolved_integrations": {}}
+        return _resolve_from_local_sources(tracker)
 
-    else:
-        # Priority 2: JWT_TOKEN env var
-        env_token = _strip_bearer(os.getenv("JWT_TOKEN", "").strip())
-        if env_token:
-            if not org_id:
-                org_id = _decode_org_id_from_token(env_token)
-            if not org_id:
-                return _resolve_from_local_sources(tracker)
-            try:
-                from app.agent.tools.clients.tracer_client import get_tracer_client_for_org
-                all_integrations = get_tracer_client_for_org(org_id, env_token).get_all_integrations()
-            except Exception:
-                return _resolve_from_local_sources(tracker)
-            return _resolve_remote_with_local_fallback(all_integrations, tracker)
-        else:
-            # Priority 3: local sources only
-            return _resolve_from_local_sources(tracker)
+    # Remote fetch succeeded.
+    if is_webhook:
+        # Priority 1: Webhook uses ONLY remote data
+        resolved = _classify_integrations(all_integrations)
+        services = [k for k in resolved if k != "_all"]
+        tracker.complete("resolve_integrations", fields_updated=["resolved_integrations"], message=f"Resolved integrations: {services}" if services else "No active integrations found")
+        return {"resolved_integrations": resolved}
 
-    resolved = _classify_integrations(all_integrations)
-    services = [k for k in resolved if k != "_all"]
-
-    tracker.complete(
-        "resolve_integrations",
-        fields_updated=["resolved_integrations"],
-        message=f"Resolved integrations: {services}" if services else "No active integrations found",
-    )
-
-    return {"resolved_integrations": resolved}
+    # Priority 2: Env token uses remote data WITH local fallback
+    return _resolve_remote_with_local_fallback(all_integrations, tracker)
 
 
 def _resolve_from_local_sources(tracker: Any) -> dict:

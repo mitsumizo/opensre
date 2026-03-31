@@ -49,15 +49,33 @@ def _enrich_raw_alert(raw_alert: Any, details: AlertDetails) -> Any:
     return enriched
 
 
+def _handle_slack_reaction(state: InvestigationState, is_noise: bool) -> None:
+    """Helper to manage Slack reactions without cluttering the main node."""
+    slack_ctx = state.get("slack_context", {}) or {}
+    _ts = slack_ctx.get("ts") or slack_ctx.get("thread_ts")
+    _channel = slack_ctx.get("channel_id")
+    _token = slack_ctx.get("access_token")
+    
+    if not (_token and _channel and _ts):
+        return
+        
+    if is_noise:
+        from app.agent.utils.slack_delivery import swap_reaction
+        swap_reaction("eyes", "white_check_mark", _channel, _ts, _token)
+    else:
+        from app.agent.utils.slack_delivery import add_reaction
+        add_reaction("eyes", _channel, _ts, _token)
+
+
 @traceable(name="node_extract_alert")
 def node_extract_alert(state: InvestigationState) -> dict:
     """Classify and extract alert details from raw input (single LLM call)."""
     tracker = get_tracker()
     tracker.start("extract_alert", "Classifying and extracting alert details")
 
-    raw_input = state.get("raw_alert")
-    if raw_input is not None:
-        formatted = json.dumps(raw_input, indent=2, default=str) if isinstance(raw_input, dict) else str(raw_input)
+    raw_alert = state.get("raw_alert", {})
+    if raw_alert:
+        formatted = json.dumps(raw_alert, indent=2, default=str) if isinstance(raw_alert, dict) else str(raw_alert)
         logger.info("[extract_alert] Raw alert input:\n%s", formatted)
         debug_print(f"Raw alert input:\n{formatted}")
 
@@ -66,25 +84,12 @@ def node_extract_alert(state: InvestigationState) -> dict:
     if details.is_noise:
         debug_print("Message classified as noise - skipping investigation")
         tracker.complete("extract_alert", fields_updated=["is_noise"])
-        slack_ctx = state.get("slack_context", {}) or {}
-        _ts = slack_ctx.get("ts") or slack_ctx.get("thread_ts")
-        _channel = slack_ctx.get("channel_id")
-        _token = slack_ctx.get("access_token")
-        if _token and _channel and _ts:
-            from app.agent.utils.slack_delivery import swap_reaction
-            swap_reaction("eyes", "white_check_mark", _channel, _ts, _token)
+        _handle_slack_reaction(state, is_noise=True)
         return {"is_noise": True}
 
-    raw_alert = state.get("raw_alert", {})
     alert_id = raw_alert.get("alert_id") if isinstance(raw_alert, dict) else None
 
-    slack_ctx = state.get("slack_context", {}) or {}
-    _ts = slack_ctx.get("ts") or slack_ctx.get("thread_ts")
-    _channel = slack_ctx.get("channel_id")
-    _token = slack_ctx.get("access_token")
-    if _token and _channel and _ts:
-        from app.agent.utils.slack_delivery import add_reaction
-        add_reaction("eyes", _channel, _ts, _token)
+    _handle_slack_reaction(state, is_noise=False)
 
     debug_print(
         f"Alert: {details.alert_name} | Pipeline: {details.pipeline_name} | "

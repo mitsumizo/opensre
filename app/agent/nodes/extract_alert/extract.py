@@ -6,39 +6,20 @@ from typing import Any, cast
 from app.agent.nodes.extract_alert.models import AlertDetails, AlertExtractionInput
 from app.agent.output import debug_print
 from app.agent.state import InvestigationState
+from app.agent.prompts import EXTRACT_ALERT_PROMPT
 from app.agent.tools.clients import get_llm
 
 
 def extract_alert_details(state: InvestigationState) -> AlertDetails:
     """Single LLM call: classify noise + extract all routing fields simultaneously."""
+
     raw_alert = state.get("raw_alert")
     if raw_alert is None:
         raise RuntimeError("raw_alert is required for alert extraction")
 
     text = AlertExtractionInput(raw_alert=_format_raw_alert(raw_alert)).raw_alert
 
-    prompt = f"""Classify and extract fields from this alert message.
-
-is_noise=true ONLY for: casual chat, greetings, trivial messages ("ok", "thanks"), or replies to existing investigation reports.
-is_noise=false (default) for: any alert, error, failure, incident, warning, monitoring notification.
-When in doubt, set is_noise=false.
-
-Extract these fields from the message text:
-- alert_name: The name of the alert (e.g. "Pipeline Error in Logs")
-- pipeline_name: The affected pipeline/table/service name
-- severity: critical/high/warning/info
-- alert_source: Which platform fired this alert. Set to "grafana" if the URL/text mentions grafana.net, Grafana alerting, or grafana_folder. Set to "datadog" if it mentions datadoghq.com or Datadog monitors. Set to "cloudwatch" if it mentions AWS CloudWatch alarms. Set to "eks" if it mentions EKS, CrashLoopBackOff, OOMKilled, Kubernetes pods, or kube_namespace. Leave null if truly unknown.
-- kube_namespace: Kubernetes namespace if mentioned (e.g. "tracer-test" from "kube_namespace:tracer-test")
-- cloudwatch_log_group: AWS CloudWatch log group if mentioned (e.g. "/aws/ecs/my-service")
-- error_message: The actual error line from the alert (e.g. "PIPELINE_ERROR: Schema validation failed: Missing fields ['customer_id']")
-- log_query: The log search query from the alert body — usually the "Search logs:" or "monitored query" line (e.g. "OOMKilled kube_namespace:tracer-cl" or "PIPELINE_ERROR kube_namespace:tracer-test"). Leave null if not present.
-- eks_cluster: EKS cluster name if mentioned (e.g. "tracer-eks-test" from eks_cluster or cluster annotation)
-- pod_name: Kubernetes pod name if mentioned (e.g. "etl-worker-7d9f8b-xkp2q")
-- deployment: Kubernetes deployment name if mentioned (e.g. "etl-worker")
-
-Message:
-{text}
-"""
+    prompt = EXTRACT_ALERT_PROMPT.format(text=text)
     llm = get_llm()
     try:
         details = cast(

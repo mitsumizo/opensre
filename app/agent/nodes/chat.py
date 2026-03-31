@@ -8,9 +8,10 @@ from collections.abc import Callable
 from typing import Any
 
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.messages import BaseMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool
+from langgraph.prebuilt import ToolNode
 
 from app.agent.prompts import ROUTER_PROMPT, SYSTEM_PROMPT
 from app.agent.state import AgentState, ChatMessage
@@ -41,6 +42,7 @@ from app.agent.tools.tool_actions.tracer.tracer_runs import (
     get_tracer_tasks,
 )
 
+# チャットに向けた関数群
 _CHAT_FUNCTIONS: list[Callable[..., Any]] = [
     fetch_failed_run,
     get_tracer_run,
@@ -59,7 +61,9 @@ _CHAT_FUNCTIONS: list[Callable[..., Any]] = [
     list_sentry_issue_events,
 ]
 
+# チャットで使うTools
 CHAT_TOOLS: list[StructuredTool] = [
+    # TODO : 何をしてる？
     StructuredTool.from_function(fn, return_direct=False) for fn in _CHAT_FUNCTIONS
 ]
 
@@ -73,23 +77,25 @@ _TYPE_TO_ROLE: dict[str, str] = {
 
 
 def _normalize_messages(msgs: list[Any]) -> list[ChatMessage]:
-    """Normalize messages from LangChain format to plain ChatMessage dicts."""
+    """Normalize messages from LangChain format to plain ChatMessage dicts safely."""
     result: list[ChatMessage] = []
     for m in msgs:
-        if hasattr(m, "type") and hasattr(m, "content"):
-            role = _TYPE_TO_ROLE.get(m.type, "user")
-            result.append({"role": role, "content": str(m.content)})  # type: ignore[typeddict-item]
+        # LangChain BaseMessage instances
+        if isinstance(m, BaseMessage):
+            role = "assistant" if m.type == "ai" else _TYPE_TO_ROLE.get(m.type, "user")
+            result.append({"role": role, "content": str(m.content)})
             continue
-        if not isinstance(m, dict):
-            continue
-        if "role" in m:
-            result.append(m)  # type: ignore[arg-type]
-            continue
-        if "type" in m:
-            role = _TYPE_TO_ROLE.get(m["type"], "user")
-            result.append({"role": role, "content": str(m.get("content", ""))})  # type: ignore[typeddict-item]
-            continue
-        result.append(m)  # type: ignore[arg-type]
+
+        # Dictionary formats
+        if isinstance(m, dict):
+            content = str(m.get("content", ""))
+            if "role" in m:
+                result.append({"role": str(m["role"]), "content": content})
+                continue
+            if "type" in m:
+                role = "assistant" if m["type"] == "ai" else _TYPE_TO_ROLE.get(m["type"], "user")
+                result.append({"role": role, "content": content})
+
     return result
 
 
@@ -103,26 +109,22 @@ def _get_chat_llm(*, with_tools: bool = False) -> ChatAnthropic:
     """Get a LangChain ChatAnthropic for chat nodes (supports streaming)."""
     global _chat_llm, _chat_llm_with_tools
 
-    if with_tools:
-        if _chat_llm_with_tools is None:
-            from app.config import DEFAULT_MAX_TOKENS, DEFAULT_MODEL
-
-            base = ChatAnthropic(  # type: ignore[call-arg]
-                model=os.getenv("ANTHROPIC_MODEL", DEFAULT_MODEL),
-                max_tokens=DEFAULT_MAX_TOKENS,
-                streaming=True,
-            )
-            _chat_llm_with_tools = base.bind_tools(CHAT_TOOLS)  # type: ignore[assignment]
-        return _chat_llm_with_tools  # type: ignore[return-value]
-
+    # 1. Instantiate the base model once
     if _chat_llm is None:
         from app.config import DEFAULT_MAX_TOKENS, DEFAULT_MODEL
 
-        _chat_llm = ChatAnthropic(  # type: ignore[call-arg]
+        _chat_llm = ChatAnthropic(
             model=os.getenv("ANTHROPIC_MODEL", DEFAULT_MODEL),
             max_tokens=DEFAULT_MAX_TOKENS,
             streaming=True,
         )
+
+    # 2. Bind tools if requested
+    if with_tools:
+        if _chat_llm_with_tools is None:
+            _chat_llm_with_tools = _chat_llm.bind_tools(CHAT_TOOLS)
+        return _chat_llm_with_tools
+
     return _chat_llm
 
 
@@ -131,9 +133,10 @@ def _get_chat_llm(*, with_tools: bool = False) -> ChatAnthropic:
 
 def router_node(state: AgentState) -> dict[str, Any]:
     """Route chat messages by intent."""
+    # メッセージを正規化
     msgs = _normalize_messages(list(state.get("messages", [])))
     if not msgs or msgs[-1].get("role") != "user":
-        return {"route": "general"}
+        raise ValueError("Router node requires a recent user message to classify.")
 
     response = get_llm().invoke([
         {"role": "system", "content": ROUTER_PROMPT},
@@ -181,42 +184,4 @@ def general_node(state: AgentState, config: RunnableConfig) -> dict[str, Any]:  
     return {"messages": [response]}
 
 
-def tool_executor_node(state: AgentState) -> dict[str, Any]:
-    """Execute tool calls from the last AI message and return ToolMessages."""
-    msgs = list(state.get("messages", []))
-    if not msgs:
-        return {"messages": []}
-
-    last_ai = None
-    for m in reversed(msgs):
-        if hasattr(m, "tool_calls") and getattr(m, "tool_calls", None):
-            last_ai = m
-            break
-
-    if not last_ai or not last_ai.tool_calls:
-        return {"messages": []}
-
-    tool_map = {t.name: t for t in CHAT_TOOLS}
-
-    tool_messages = []
-    for tc in last_ai.tool_calls:
-        tool_name = tc["name"]
-        tool_args = tc.get("args", {})
-        tool_id = tc["id"]
-
-        try:
-            tool_fn = tool_map.get(tool_name)
-            if tool_fn is None:
-                result = json.dumps({"error": f"Unknown tool: {tool_name}"})
-            else:
-                result = tool_fn.invoke(tool_args)
-                if not isinstance(result, str):
-                    result = json.dumps(result, default=str)
-        except Exception as e:
-            result = json.dumps({"error": str(e)})
-
-        tool_messages.append(
-            ToolMessage(content=result, tool_call_id=tool_id, name=tool_name)
-        )
-
-    return {"messages": tool_messages}
+tool_executor_node = ToolNode(CHAT_TOOLS)
